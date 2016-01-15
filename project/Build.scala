@@ -1,4 +1,3 @@
-import bintray.BintrayKeys
 import com.typesafe.sbt.GitPlugin
 import com.typesafe.sbt.SbtScalariform
 import de.heikoseeberger.sbtheader.{ HeaderKey, HeaderPlugin }
@@ -53,9 +52,6 @@ object Build extends AutoPlugin {
       GitPlugin.autoImport.git.useGitDescribe := true,
 
       // Header settings
-      HeaderKey.headers := Map("scala" -> Apache2_0("2015", "Heiko Seeberger")),
-
-      // Bintray settings
-      BintrayKeys.bintrayPackage := "constructr"
-    )
+      HeaderKey.headers := Map("scala" -> Apache2_0("2015", "Heiko Seeberger"))
+    ) ++ ArtifactoryPlugin.projectSettings
 }
