@@ -32,6 +32,8 @@ trait ConstructrMachineSettings {
 
   final val refreshInterval: FiniteDuration = getDuration("refresh-interval")
 
+  final val nrOfRefreshRetries: Int = config.getInt("nr-of-refresh-retries")
+
   final val retryGetNodesDelay: FiniteDuration = getDuration("retry-get-nodes-delay")
 
   final val ttlFactor: Double = {
