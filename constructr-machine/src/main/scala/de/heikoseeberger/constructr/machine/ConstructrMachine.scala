@@ -39,7 +39,7 @@ object ConstructrMachine {
     case object Refreshing extends State
   }
 
-  case class Data[N, B <: Coordination.Backend](nodes: List[N], nrOfAddSelfRetriesLeft: Int, context: B#Context)
+  case class Data[N, B <: Coordination.Backend](nodes: List[N], nrOfAddSelfRetriesLeft: Int, nrOfRefreshRetriesLeft: Int, context: B#Context)
 
   private final case class Retry(state: State)
 
@@ -54,6 +54,7 @@ object ConstructrMachine {
     nrOfAddSelfRetries: Int,
     retryGetNodesDelay: FiniteDuration,
     refreshInterval: FiniteDuration,
+    nrOfRefreshRetries: Int,
     ttlFactor: Double,
     maxNrOfSeedNodes: Int,
     joinTimeout: Option[FiniteDuration] = None,
@@ -68,6 +69,7 @@ object ConstructrMachine {
       nrOfAddSelfRetries,
       retryGetNodesDelay,
       refreshInterval,
+      nrOfRefreshRetries,
       ttlFactor,
       maxNrOfSeedNodes,
       joinTimeout,
@@ -84,6 +86,7 @@ final class ConstructrMachine[N: Coordination.NodeSerialization, B <: Coordinati
   nrOfAddSelfRetries: Int,
   retryGetNodesDelay: FiniteDuration,
   refreshInterval: FiniteDuration,
+  nrOfRefreshRetries: Int,
   ttlFactor: Double,
   maxNrOfSeedNodes: Int,
   joinTimeout: Option[FiniteDuration],
@@ -107,7 +110,7 @@ final class ConstructrMachine[N: Coordination.NodeSerialization, B <: Coordinati
 
   private val addOrRefreshTtl = refreshInterval * ttlFactor
 
-  startWith(State.GettingNodes, Data(Nil, nrOfAddSelfRetries, coordination.initialBackendContext))
+  startWith(State.GettingNodes, Data(Nil, nrOfAddSelfRetries, nrOfRefreshRetries, coordination.initialBackendContext))
 
   // Getting nodes
 
@@ -210,27 +213,34 @@ final class ConstructrMachine[N: Coordination.NodeSerialization, B <: Coordinati
   }
 
   when(State.Refreshing, coordinationTimeout) {
-    case Event(Coordination.Refreshed(_), _) =>
+    case Event(Coordination.Refreshed(_), data) =>
       log.debug("Successfully refreshed, going to RefreshScheduled")
-      goto(State.RefreshScheduled)
+      goto(State.RefreshScheduled).using(data.copy(nrOfRefreshRetriesLeft = nrOfRefreshRetries))
   }
 
   // Handle failure
 
   whenUnhandled {
-    case Event(Status.Failure(cause), _) =>
-      log.error(cause, "Unexpected failure!")
-      throw cause
-
-    case Event(StateTimeout, data @ Data(_, n, _)) =>
+    case Event(Status.Failure(cause), data @ Data(_, _, refreshRetriesLeft, _)) =>
       stateName match {
-        case State.AddingSelf if n > 0 =>
-          log.warning(s"Coordination timout in state ${State.AddingSelf}, $n retries left!")
-          goto(stateName).using(data.copy(nrOfAddSelfRetriesLeft = n - 1))
+        case State.Refreshing if refreshRetriesLeft > 0 =>
+          log.warning(s"Coordination failure in state ${State.Refreshing}, $refreshRetriesLeft retries left!")
+          goto(State.RefreshScheduled).using(data.copy(nrOfRefreshRetriesLeft = refreshRetriesLeft - 1))
 
-        case State.AddingSelf =>
-          log.error(s"Coordination timeout in state ${State.AddingSelf}, no retries left!")
-          throw ConstructrMachine.StateTimeoutException(stateName)
+        case _ =>
+          log.error(cause, "Unexpected failure!")
+          throw cause
+      }
+
+    case Event(StateTimeout, data @ Data(_, addSelfRetriesLeft, refreshRetriesLeft, _)) =>
+      stateName match {
+        case State.AddingSelf if addSelfRetriesLeft > 0 =>
+          log.warning(s"Coordination timout in state ${State.AddingSelf}, $addSelfRetriesLeft retries left!")
+          goto(stateName).using(data.copy(nrOfAddSelfRetriesLeft = addSelfRetriesLeft - 1))
+
+        case State.Refreshing if refreshRetriesLeft > 0 =>
+          log.warning(s"Coordination timout in state ${State.AddingSelf}, $refreshRetriesLeft retries left!")
+          goto(State.RefreshScheduled).using(data.copy(nrOfRefreshRetriesLeft = refreshRetriesLeft - 1))
 
         case _ =>
           log.warning(s"Coordination timout in state $stateName, retrying!")
