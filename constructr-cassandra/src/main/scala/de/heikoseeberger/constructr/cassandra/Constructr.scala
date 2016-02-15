@@ -62,7 +62,7 @@ final class Constructr private (override val supervisorStrategy: SupervisorStrat
     val coordination = {
       import settings.coordination._
       val sendFlow = Http()(context.system).outgoingConnection(host, port)
-      Coordination(backend)("cassandra", settings.clusterName, host, port, sendFlow)
+      Coordination(backend)("cassandra", settings.clusterName, host, port, sendFlow, log)
     }
     context.actorOf(
       CassandraConstructrMachine.props(
