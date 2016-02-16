@@ -22,11 +22,12 @@ import akka.http.scaladsl.model.{ HttpEntity, HttpResponse, ResponseEntity, Requ
 import akka.http.scaladsl.model.MediaTypes.`application/json`
 import akka.http.scaladsl.unmarshalling.Unmarshal
 import akka.stream.Materializer
+import akka.event._
 import scala.concurrent.duration.FiniteDuration
 import scala.concurrent.{ ExecutionContext, Future }
 import java.nio.charset.StandardCharsets.UTF_8
 
-final class ConsulCoordination(prefix: String, clusterName: String, host: String, port: Int)(implicit sendFlow: Coordination.SendFlow)
+final class ConsulCoordination(prefix: String, clusterName: String, host: String, port: Int, log: LoggingAdapter)(implicit sendFlow: Coordination.SendFlow)
     extends Coordination[Coordination.Backend.Consul.type] {
   import Coordination._
   import Backend.Consul.SessionId
@@ -122,8 +123,14 @@ final class ConsulCoordination(prefix: String, clusterName: String, host: String
   override def refresh[N: NodeSerialization](self: N, ttl: FiniteDuration, sessionId: String)(implicit ec: ExecutionContext, mat: Materializer) = {
     val uri = sessionUri.withPath(sessionUri.path / "renew" / sessionId)
     send(Put(uri)).flatMap {
-      case HttpResponse(OK, _, entity, _)    => ignore(entity).map(_ => Refreshed)
-      case HttpResponse(other, _, entity, _) => ignore(entity).map(_ => throw UnexpectedStatusCode(uri, other))
+      case HttpResponse(OK, _, entity, _) => ignore(entity).map { _ =>
+        log.info(s"Refreshed session with id $sessionId");
+        Refreshed
+      }
+      case HttpResponse(other, _, entity, _) => Unmarshal(entity).to[String].map { entity =>
+        log.warning(s"Failed to refresh session $sessionId: status code $other, entity $entity")
+        throw UnexpectedStatusCode(uri, other)
+      }
     }
   }
 
@@ -175,8 +182,12 @@ final class ConsulCoordination(prefix: String, clusterName: String, host: String
     val createSessionUri = sessionUri.withPath(sessionUri.path / "create")
     val body = HttpEntity(`application/json`, s"""{"behavior": "delete", "ttl": "${toSeconds(ttl)}s"}""")
     send(Put(createSessionUri, body)).flatMap {
-      case HttpResponse(OK, _, entity, _)    => unmarshalSessionId(entity)
-      case HttpResponse(other, _, entity, _) => ignore(entity).map(_ => throw UnexpectedStatusCode(createSessionUri, other))
+      case HttpResponse(OK, _, entity, _) =>
+        val sessionId = unmarshalSessionId(entity);
+        sessionId.onSuccess { case id => log.info(s"Created session $id with ttl $ttl") }
+        sessionId
+      case HttpResponse(other, _, entity, _) =>
+        ignore(entity).map(_ => throw UnexpectedStatusCode(createSessionUri, other))
     }
   }
 }
