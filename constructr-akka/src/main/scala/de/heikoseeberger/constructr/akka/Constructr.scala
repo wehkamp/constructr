@@ -16,21 +16,23 @@
 
 package de.heikoseeberger.constructr.akka
 
-import akka.actor.{ Actor, ActorLogging, ActorRef, Props, SupervisorStrategy, Terminated }
+import akka.actor.{ SupervisorStrategy, Actor, ActorLogging, ActorRef, Props, Terminated }
 import akka.cluster.Cluster
 import akka.cluster.ClusterEvent.{ InitialStateAsEvents, MemberExited, MemberLeft, MemberRemoved }
 import akka.http.scaladsl.Http
+import akka.stream.ActorMaterializer
 import de.heikoseeberger.constructr.coordination.Coordination
 
 object Constructr {
 
   final val Name = "constructr"
 
-  def props(strategy: SupervisorStrategy = SupervisorStrategy.stoppingStrategy): Props = Props(new Constructr(strategy))
+  def props: Props = Props(new Constructr)
 }
 
-final class Constructr private (override val supervisorStrategy: SupervisorStrategy)
-    extends Actor with ActorLogging with ActorSettings {
+final class Constructr private extends Actor with ActorLogging with ActorSettings {
+
+  override val supervisorStrategy = SupervisorStrategy.stoppingStrategy
 
   if (Cluster(context.system).settings.SeedNodes.isEmpty) {
     log.info("Creating constructr-machine, because no seed-nodes defined")
@@ -57,14 +59,14 @@ final class Constructr private (override val supervisorStrategy: SupervisorStrat
     val coordination = {
       import settings.coordination._
       val sendFlow = Http()(context.system).outgoingConnection(host, port)
-      Coordination(backend)("akka", context.system.name, host, port, sendFlow, log)
+      Coordination(backend)("akka", context.system.name, host, port, sendFlow, context.dispatcher, ActorMaterializer(), log)
     }
     context.actorOf(
       AkkaConstructrMachine.props(
         Cluster(context.system).selfAddress,
         coordination,
         settings.coordinationTimeout,
-        settings.coordinationRetries,
+        settings.nrOfRetries,
         settings.retryDelay,
         settings.refreshInterval,
         settings.ttlFactor,

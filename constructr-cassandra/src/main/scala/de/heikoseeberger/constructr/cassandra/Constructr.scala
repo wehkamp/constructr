@@ -18,6 +18,7 @@ package de.heikoseeberger.constructr.cassandra
 
 import akka.actor.{ Actor, ActorLogging, ActorRef, Props, SupervisorStrategy, Terminated }
 import akka.http.scaladsl.Http
+import akka.stream.ActorMaterializer
 import de.heikoseeberger.constructr.coordination.Coordination
 import java.net.InetAddress
 
@@ -28,12 +29,13 @@ object Constructr {
   case object GetNodes
   final case class Nodes(value: Vector[InetAddress])
 
-  def props(strategy: SupervisorStrategy = SupervisorStrategy.stoppingStrategy): Props = Props(new Constructr(strategy))
+  def props: Props = Props(new Constructr)
 }
 
-final class Constructr private (override val supervisorStrategy: SupervisorStrategy)
-    extends Actor with ActorLogging with ActorSettings {
+final class Constructr private extends Actor with ActorLogging with ActorSettings {
   import Constructr._
+
+  override val supervisorStrategy = SupervisorStrategy.stoppingStrategy
 
   private val machine = context.watch(createConstructrMachine())
 
@@ -62,14 +64,14 @@ final class Constructr private (override val supervisorStrategy: SupervisorStrat
     val coordination = {
       import settings.coordination._
       val sendFlow = Http()(context.system).outgoingConnection(host, port)
-      Coordination(backend)("cassandra", settings.clusterName, host, port, sendFlow, log)
+      Coordination(backend)("cassandra", settings.clusterName, host, port, sendFlow, context.dispatcher, ActorMaterializer(), log)
     }
     context.actorOf(
       CassandraConstructrMachine.props(
         settings.selfNode,
         coordination,
         settings.coordinationTimeout,
-        settings.coordinationRetries,
+        settings.nrOfRetries,
         settings.retryDelay,
         settings.refreshInterval,
         settings.ttlFactor,

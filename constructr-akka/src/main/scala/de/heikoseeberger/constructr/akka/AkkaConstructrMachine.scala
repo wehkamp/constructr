@@ -16,7 +16,7 @@
 
 package de.heikoseeberger.constructr.akka
 
-import akka.actor.{ Address, Props }
+import akka.actor.{ Address, FSM, Props }
 import akka.cluster.Cluster
 import akka.cluster.ClusterEvent.{ InitialStateAsEvents, MemberJoined, MemberUp }
 import de.heikoseeberger.constructr.coordination.Coordination
@@ -60,7 +60,7 @@ final class AkkaConstructrMachine[B <: Coordination.Backend](
   ttlFactor: Double,
   maxNrOfSeedNodes: Int,
   joinTimeout: FiniteDuration
-) extends ConstructrMachine[Address, B](
+) extends ConstructrMachine(
   selfNode,
   coordination,
   coordinationTimeout,
@@ -83,6 +83,7 @@ final class AkkaConstructrMachine[B <: Coordination.Backend](
     case Event(MemberJoined(member), _)                               => stay()
     case Event(MemberUp(member), _) if member.address == selfNode     => goto(State.AddingSelf)
     case Event(MemberUp(member), _)                                   => stay()
+    case Event(StateTimeout, _)                                       => stop(FSM.Failure("Timeout in Joining!"))
   }
 
   override protected def outOfJoiningHandler() = Cluster(context.system).unsubscribe(self)
