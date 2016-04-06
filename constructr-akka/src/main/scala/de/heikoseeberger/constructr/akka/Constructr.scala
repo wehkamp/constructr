@@ -28,7 +28,7 @@ object Constructr {
 
   final val Name = "constructr"
 
-  def props: Props = Props(new Constructr)
+  def props(supervision: SupervisorStrategy): Props = Props(new Constructr(supervision))
 
   private def intoJoiningHandler(machine: ConstructrMachine[Address]) = {
     import machine._
@@ -54,10 +54,10 @@ object Constructr {
   }
 }
 
-final class Constructr private extends Actor with ActorLogging with ActorSettings {
+final class Constructr private (supervision: SupervisorStrategy) extends Actor with ActorLogging with ActorSettings {
   import Constructr._
 
-  override val supervisorStrategy = SupervisorStrategy.stoppingStrategy
+  override val supervisorStrategy = supervision
 
   if (Cluster(context.system).settings.SeedNodes.isEmpty) {
     log.info("Creating constructr-machine, because no seed-nodes defined")
