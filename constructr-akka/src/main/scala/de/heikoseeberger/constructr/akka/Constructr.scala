@@ -83,7 +83,7 @@ final class Constructr private extends Actor with ActorLogging with ActorSetting
   private def createConstructrMachine() = {
     val coordination = {
       import settings.coordination._
-      val connection = Http()(context.system).outgoingConnection(host, port)
+      val connection = Http()(context.system).outgoingConnection(host, port).log("constructr-akka-coordination")(log)
       Coordination("akka", context.system.name, context.system.settings.config)(connection, ActorMaterializer())
     }
     context.actorOf(
