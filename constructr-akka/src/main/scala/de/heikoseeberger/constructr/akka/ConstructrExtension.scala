@@ -16,10 +16,10 @@
 
 package de.heikoseeberger.constructr.akka
 
-import akka.actor.{ ExtendedActorSystem, Extension, ExtensionKey }
+import akka.actor.{ ExtendedActorSystem, Extension, ExtensionKey, SupervisorStrategy }
 
 object ConstructrExtension extends ExtensionKey[ConstructrExtension]
 
 final class ConstructrExtension private (system: ExtendedActorSystem) extends Extension {
-  system.systemActorOf(Constructr.props, Constructr.Name)
+  system.systemActorOf(Constructr.props(SupervisorStrategy.stoppingStrategy), Constructr.Name)
 }

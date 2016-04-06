@@ -16,20 +16,35 @@
 
 package de.heikoseeberger.constructr.cassandra
 
-import akka.actor.{ Actor, ActorLogging, ActorRef, Props, SupervisorStrategy, Terminated }
+import akka.actor.{ Actor, ActorLogging, ActorRef, FSM, Props, SupervisorStrategy, Terminated }
 import akka.http.scaladsl.Http
 import akka.stream.ActorMaterializer
 import de.heikoseeberger.constructr.coordination.Coordination
+import de.heikoseeberger.constructr.machine.ConstructrMachine
+import de.heikoseeberger.constructr.machine.ConstructrMachine.State
 import java.net.InetAddress
+import scala.concurrent.duration.Duration
 
 object Constructr {
 
   final val Name = "constructr"
 
   case object GetNodes
-  final case class Nodes(value: Vector[InetAddress])
+  final case class Nodes(value: Set[InetAddress])
 
   def props: Props = Props(new Constructr)
+
+  private def intoJoiningHandler(machine: ConstructrMachine[InetAddress]) = {
+    import machine._
+    self ! Constructr.Nodes(seedNodes(nextStateData.nodes))
+  }
+
+  private def joiningFunction(machine: ConstructrMachine[InetAddress]): ConstructrMachine.StateFunction[InetAddress] = {
+    import machine._
+    { case FSM.Event(FSM.StateTimeout, _) => goto(State.AddingSelf) }
+  }
+
+  private def outOfJoiningHandler(machine: ConstructrMachine[InetAddress]) = ()
 }
 
 final class Constructr private extends Actor with ActorLogging with ActorSettings {
@@ -63,11 +78,11 @@ final class Constructr private extends Actor with ActorLogging with ActorSetting
   private def createConstructrMachine() = {
     val coordination = {
       import settings.coordination._
-      val sendFlow = Http()(context.system).outgoingConnection(host, port)
-      Coordination(backend)("cassandra", settings.clusterName, host, port, sendFlow, context.dispatcher, ActorMaterializer(), log)
+      val connection = Http()(context.system).outgoingConnection(host, port)
+      Coordination("cassandra", settings.clusterName, context.system.settings.config)(connection, ActorMaterializer())
     }
     context.actorOf(
-      CassandraConstructrMachine.props(
+      ConstructrMachine.props(
         settings.selfNode,
         coordination,
         settings.coordinationTimeout,
@@ -76,9 +91,12 @@ final class Constructr private extends Actor with ActorLogging with ActorSetting
         settings.refreshInterval,
         settings.ttlFactor,
         settings.maxNrOfSeedNodes,
-        self
+        Duration.Zero,
+        intoJoiningHandler,
+        joiningFunction,
+        outOfJoiningHandler
       ),
-      CassandraConstructrMachine.Name
+      ConstructrMachine.Name
     )
   }
 }
