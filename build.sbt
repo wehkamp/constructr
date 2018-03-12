@@ -54,6 +54,7 @@ lazy val `coordination-etcd` =
       name := "constructr-coordination-etcd",
       libraryDependencies ++= Seq(
         library.akkaHttp,
+        library.akkaStream,
         library.circeParser,
         library.akkaTestkit % Test,
         library.scalaTest   % Test
@@ -67,13 +68,13 @@ lazy val `coordination-etcd` =
 lazy val library =
   new {
     object Version {
-      final val akka      = "2.4.16"
-      final val akkaHttp  = "10.0.2"
-      final val akkaLog4j = "1.3.0"
-      final val circe     = "0.7.0"
-      final val log4j     = "2.8"
-      final val mockito   = "2.6.8"
-      final val scalaTest = "3.0.1"
+      final val akka      = "2.5.6"
+      final val akkaHttp  = "10.0.10"
+      final val akkaLog4j = "1.5.0"
+      final val circe     = "0.8.0"
+      final val log4j     = "2.9.1"
+      final val mockito   = "2.7.22"
+      final val scalaTest = "3.0.4"
     }
     val akkaActor            = "com.typesafe.akka"        %% "akka-actor"              % Version.akka
     val akkaCluster          = "com.typesafe.akka"        %% "akka-cluster"            % Version.akka
@@ -81,6 +82,7 @@ lazy val library =
     val akkaLog4j            = "de.heikoseeberger"        %% "akka-log4j"              % Version.akkaLog4j
     val akkaMultiNodeTestkit = "com.typesafe.akka"        %% "akka-multi-node-testkit" % Version.akka
     val akkaSlf4j            = "com.typesafe.akka"        %% "akka-slf4j"              % Version.akka
+    val akkaStream           = "com.typesafe.akka"        %% "akka-stream"             % Version.akka
     val akkaTestkit          = "com.typesafe.akka"        %% "akka-testkit"            % Version.akka
     val circeParser          = "io.circe"                 %% "circe-parser"            % Version.circe
     val log4jCore            = "org.apache.logging.log4j" %  "log4j-core"              % Version.log4j
@@ -94,10 +96,10 @@ lazy val library =
 
 lazy val settings =
   commonSettings ++
-  scalafmtSettings ++
   gitSettings ++
-  headerSettings ++
-  sonatypeSettings ++
+  scalafmtSettings ++
+  publishSettings ++
+  multiJvmSettings ++
   bintraySettings
 
 lazy val commonSettings =
@@ -105,10 +107,9 @@ lazy val commonSettings =
     // scalaVersion from .travis.yml
     // crossScalaVersions from .travis.yml
     organization := "de.heikoseeberger",
-    licenses += ("Apache 2.0",
-                 url("http://www.apache.org/licenses/LICENSE-2.0")),
-    mappings.in(Compile, packageBin) +=
-      baseDirectory.in(ThisBuild).value / "LICENSE" -> "LICENSE",
+    organizationName := "Heiko Seeberger",
+    startYear := Some(2015),
+    licenses += ("Apache-2.0", url("http://www.apache.org/licenses/LICENSE-2.0")),
     scalacOptions ++= Seq(
       "-unchecked",
       "-deprecation",
@@ -116,38 +117,23 @@ lazy val commonSettings =
       "-target:jvm-1.8",
       "-encoding", "UTF-8"
     ),
-    javacOptions ++= Seq(
-      "-source", "1.8",
-      "-target", "1.8"
-    ),
-    unmanagedSourceDirectories.in(Compile) :=
-      Seq(scalaSource.in(Compile).value),
-    unmanagedSourceDirectories.in(Test) :=
-      Seq(scalaSource.in(Test).value)
+    unmanagedSourceDirectories.in(Compile) := Seq(scalaSource.in(Compile).value),
+    unmanagedSourceDirectories.in(Test) := Seq(scalaSource.in(Test).value)
 )
-
-lazy val scalafmtSettings =
-  reformatOnCompileSettings ++
-  Seq(
-    formatSbtFiles := false,
-    scalafmtConfig :=
-      Some(baseDirectory.in(ThisBuild).value / ".scalafmt.conf"),
-    ivyScala :=
-      ivyScala.value.map(_.copy(overrideScalaVersion = sbtPlugin.value)) // TODO Remove once this workaround no longer needed (https://github.com/sbt/sbt/issues/2786)!
-  )
 
 lazy val gitSettings =
   Seq(
     git.useGitDescribe := true
   )
 
-import de.heikoseeberger.sbtheader.license.Apache2_0
-lazy val headerSettings =
+lazy val scalafmtSettings =
   Seq(
-    headers := Map("scala" -> Apache2_0("2015", "Heiko Seeberger"))
+    scalafmtOnCompile := true,
+    scalafmtOnCompile.in(Sbt) := false,
+    scalafmtVersion := "1.3.0"
   )
 
-lazy val sonatypeSettings =
+lazy val publishSettings =
   Seq(
     homepage := Some(url("https://github.com/hseeberger/constructr")),
     scmInfo := Some(ScmInfo(url("https://github.com/hseeberger/constructr"),
@@ -164,21 +150,12 @@ lazy val bintraySettings =
     bintrayPackage := "constructr"
   )
 
-import ScalaFmtPlugin.configScalafmtSettings
 lazy val multiJvmSettings =
-  AutomateHeaderPlugin.automateFor(Compile, Test, MultiJvm) ++
-  HeaderPlugin.settingsFor(Compile, Test, MultiJvm) ++
-  inConfig(MultiJvm)(configScalafmtSettings) ++
+  com.typesafe.sbt.SbtMultiJvm.multiJvmSettings ++
+  inConfig(MultiJvm)(scalafmtSettings) ++
+  headerSettings(MultiJvm) ++
+  automateHeaderSettings(MultiJvm) ++
   Seq(
-    unmanagedSourceDirectories.in(MultiJvm) :=
-      Seq(scalaSource.in(MultiJvm).value),
-    test.in(Test) := {
-      val testValue = test.in(Test).value
-      test.in(MultiJvm).value
-      testValue
-    },
-    compileInputs.in(MultiJvm, compile) := {
-      val scalafmtValue = scalafmt.in(MultiJvm).value
-      compileInputs.in(MultiJvm, compile).value
-    }
+    unmanagedSourceDirectories.in(MultiJvm) := Seq(scalaSource.in(MultiJvm).value),
+    test.in(Test) := test.in(MultiJvm).dependsOn(test.in(Test)).value
   )

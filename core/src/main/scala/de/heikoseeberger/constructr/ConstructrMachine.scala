@@ -17,17 +17,13 @@
 package de.heikoseeberger.constructr
 
 import akka.Done
-import akka.actor.FSM.Failure
 import akka.actor.{ Address, FSM, Props, Status }
 import akka.cluster.Cluster
-import akka.cluster.ClusterEvent.{
-  InitialStateAsEvents,
-  MemberJoined,
-  MemberUp
-}
+import akka.cluster.ClusterEvent.{ InitialStateAsEvents, MemberJoined, MemberUp }
 import akka.pattern.pipe
 import akka.stream.ActorMaterializer
 import de.heikoseeberger.constructr.coordination.Coordination
+
 import scala.concurrent.duration.{ Duration, FiniteDuration }
 
 object ConstructrMachine {
@@ -43,18 +39,17 @@ object ConstructrMachine {
 
   sealed trait State
   final object State {
-    case object GettingNodes     extends State
-    case object Locking          extends State
-    case object Joining          extends State
-    case object AddingSelf       extends State
-    case object RefreshScheduled extends State
-    case object Refreshing       extends State
-    case object RetryScheduled   extends State
+    case object BeforeGettingNodes extends State
+    case object GettingNodes       extends State
+    case object Locking            extends State
+    case object Joining            extends State
+    case object AddingSelf         extends State
+    case object RefreshScheduled   extends State
+    case object Refreshing         extends State
+    case object RetryScheduled     extends State
   }
 
-  final case class Data(nodes: Set[Address],
-                        retryState: State,
-                        nrOfRetriesLeft: Int)
+  final case class Data(nodes: Set[Address], retryState: State, nrOfRetriesLeft: Int)
 
   final case class StateTimeoutException(state: State)
       extends RuntimeException(s"State timeout triggered in state $state!")
@@ -70,7 +65,9 @@ object ConstructrMachine {
       refreshInterval: FiniteDuration,
       ttlFactor: Double,
       maxNrOfSeedNodes: Int,
-      joinTimeout: FiniteDuration
+      joinTimeout: FiniteDuration,
+      abortOnJoinTimeout: Boolean,
+      ignoreRefreshFailures: Boolean
   ): Props =
     Props(
       new ConstructrMachine(
@@ -82,7 +79,9 @@ object ConstructrMachine {
         refreshInterval,
         ttlFactor,
         maxNrOfSeedNodes,
-        joinTimeout
+        joinTimeout,
+        abortOnJoinTimeout,
+        ignoreRefreshFailures
       )
     )
 }
@@ -96,7 +95,9 @@ final class ConstructrMachine(
     refreshInterval: FiniteDuration,
     ttlFactor: Double,
     maxNrOfSeedNodes: Int,
-    joinTimeout: FiniteDuration
+    joinTimeout: FiniteDuration,
+    abortOnJoinTimeout: Boolean,
+    ignoreRefreshFailures: Boolean
 ) extends FSM[ConstructrMachine.State, ConstructrMachine.Data] {
   import ConstructrMachine._
   import context.dispatcher
@@ -108,24 +109,37 @@ final class ConstructrMachine(
     s"ttl-factor must be greater or equal 1 + ((coordination-timeout * (1 + nr-of-retries) + retry-delay * nr-of-retries)/ refresh-interval), i.e. $minTtlFactor, but was $ttlFactor!"
   )
 
-  private implicit val mat = ActorMaterializer()
-  private val cluster      = Cluster(context.system)
+  private val cluster = Cluster(context.system)
 
-  startWith(State.GettingNodes,
-            Data(Set.empty, State.GettingNodes, nrOfRetries))
+  startWith(State.GettingNodes, Data(Set.empty, State.GettingNodes, nrOfRetries))
+
+  // Before getting nodes
+
+  when(State.BeforeGettingNodes, retryDelay) {
+    case Event(StateTimeout, _) =>
+      goto(State.GettingNodes).using(Data(Set.empty, State.GettingNodes, nrOfRetries))
+  }
 
   // Getting nodes
 
   onTransition {
     case _ -> State.GettingNodes =>
       log.debug("Transitioning to GettingNodes")
-      coordination.getNodes().pipeTo(self)
+      coordination.getNodes().map { nodes =>
+        if (nodes.contains(selfNode))
+          log.warning(
+            s"Selfnode received in list of nodes $nodes. Will filter to prevent forming an island."
+          )
+
+        nodes.filterNot(_ == selfNode)
+      } pipeTo self
   }
 
   when(State.GettingNodes, coordinationTimeout) {
     case Event(nodes: Set[Address] @unchecked, _) if nodes.isEmpty =>
       log.debug("Received empty nodes, going to Locking")
-      goto(State.Locking).using(stateData.copy(nrOfRetriesLeft = nrOfRetries))
+      goto(State.Locking)
+        .using(stateData.copy(nrOfRetriesLeft = nrOfRetries))
 
     case Event(nodes: Set[Address] @unchecked, _) =>
       log.debug(s"Received nodes $nodes, going to Joining")
@@ -159,8 +173,7 @@ final class ConstructrMachine(
 
     case Event(false, _) =>
       log.warning("Couldn't acquire lock, going to GettingNodes")
-      goto(State.GettingNodes)
-        .using(stateData.copy(nrOfRetriesLeft = nrOfRetries))
+      goto(State.BeforeGettingNodes)
 
     case Event(Status.Failure(cause), _) =>
       log.warning(s"Failure in $stateName, going to Locking: $cause")
@@ -192,7 +205,10 @@ final class ConstructrMachine(
       goto(State.AddingSelf)
 
     case Event(StateTimeout, _) =>
-      stop(Failure("Timeout in Joining!"))
+      if (abortOnJoinTimeout)
+        stop(FSM.Failure("Timeout in Joining!"))
+      else
+        goto(State.GettingNodes).using(Data(Set.empty, State.GettingNodes, nrOfRetries))
   }
 
   onTransition {
@@ -260,11 +276,11 @@ final class ConstructrMachine(
 
     case Event(Status.Failure(cause), _) =>
       log.warning(s"Failure in $stateName, going to Refreshing: $cause")
-      retry(State.Refreshing)
+      retryRefreshing()
 
     case Event(StateTimeout, _) =>
       log.warning(s"Timeout in $stateName, going to Refreshing")
-      retry(State.Refreshing)
+      retryRefreshing()
   }
 
   // RetryScheduled
@@ -283,6 +299,10 @@ final class ConstructrMachine(
   // Unhandled events
 
   whenUnhandled {
+    case Event(MemberJoined(member), _) if member.address == selfNode && isPreJoining =>
+      goto(State.AddingSelf).using(stateData.copy(nrOfRetriesLeft = nrOfRetries))
+    case Event(MemberUp(member), _) if member.address == selfNode && isPreJoining =>
+      goto(State.AddingSelf).using(stateData.copy(nrOfRetriesLeft = nrOfRetries))
     // Unsubscribe might be late
     case Event(MemberJoined(_) | MemberUp(_), _) => stay()
   }
@@ -298,8 +318,7 @@ final class ConstructrMachine(
       stop(FSM.Failure(s"Number of retries exhausted in $stateName!"))
     else
       goto(State.RetryScheduled).using(
-        stateData.copy(retryState = retryState,
-                       nrOfRetriesLeft = stateData.nrOfRetriesLeft - 1)
+        stateData.copy(retryState = retryState, nrOfRetriesLeft = stateData.nrOfRetriesLeft - 1)
       )
 
   private def maxCoordinationTimeout =
@@ -308,4 +327,18 @@ final class ConstructrMachine(
   private def minTtlFactor = 1 + maxCoordinationTimeout / refreshInterval
 
   private def addingSelfOrRefreshingTtl = refreshInterval * ttlFactor
+
+  private def retryRefreshing() =
+    if (ignoreRefreshFailures)
+      goto(State.RetryScheduled).using(
+        stateData.copy(retryState = State.Refreshing, nrOfRetriesLeft = nrOfRetries)
+      )
+    else
+      retry(State.Refreshing)
+
+  private def isPreJoining: Boolean =
+    stateName match {
+      case State.BeforeGettingNodes | State.GettingNodes | State.Locking => true
+      case _                                                             => false
+    }
 }

@@ -14,12 +14,18 @@
  * limitations under the License.
  */
 
-package de.heikoseeberger.constructr
+package de.heikoseeberger.constructr.testutil
 
-import akka.actor.{ ExtendedActorSystem, Extension, ExtensionKey }
+object CoordinationInfo {
 
-object ConstructrExtension extends ExtensionKey[ConstructrExtension]
+  def host: String = {
+    val dockerHostPattern = """tcp://(\S+):\d{1,5}""".r
+    sys.env
+      .get("DOCKER_HOST")
+      .collect({ case dockerHostPattern(address) => address })
+      .getOrElse("127.0.0.1")
+  }
 
-final class ConstructrExtension private (system: ExtendedActorSystem) extends Extension {
-  system.systemActorOf(Constructr.props, Constructr.Name)
+  def port: Int = 2379
+
 }

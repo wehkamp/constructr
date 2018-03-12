@@ -11,27 +11,27 @@ ConstructR utilizes a key-value coordination service like etcd to automate boots
 In a nutshell, ConstructR is a state machine which first tries to get the nodes from the coordination service. If none are available it tries to acquire a lock, e.g. via a CAS write for etcd, and uses itself or retries getting the nodes. Then it joins using these nodes as seed nodes. After that it adds its address to the nodes and starts the refresh loop:
 
 ```
-    ┌───────────────────┐              ┌───────────────────┐
-    │   GettingNodes    │◀─────────────│BeforeGettingNodes │
-    └───────────────────┘    delayed   └───────────────────┘
-              │     │                            ▲
-    non-empty │     └──────────────────────┐     │ failure
-              ▼               empty        ▼     │
-    ┌───────────────────┐              ┌───────────────────┐
-    │      Joining      │◀─────────────│      Locking      │
-    └───────────────────┘    success   └───────────────────┘
-              │
-member-joined │
-              ▼
-    ┌───────────────────┐
-    │    AddingSelf     │
-    └───────────────────┘
-              │     ┌────────────────────────────┐
-              │     │                            │
-              ▼     ▼                            │
-    ┌───────────────────┐              ┌───────────────────┐
-    │ RefreshScheduled  │─────────────▶│    Refreshing     │
-    └───────────────────┘              └───────────────────┘
+                  ┌───────────────────┐              ┌───────────────────┐
+              ┌──▶│   GettingNodes    │◀─────────────│BeforeGettingNodes │
+              │   └───────────────────┘    delayed   └───────────────────┘
+              │             │     │                            ▲
+  join-failed │   non-empty │     └──────────────────────┐     │ failure
+              │             ▼               empty        ▼     │
+              │   ┌───────────────────┐              ┌───────────────────┐
+              └───│      Joining      │◀─────────────│      Locking      │
+                  └───────────────────┘    success   └───────────────────┘
+                            │
+              member-joined │
+                            ▼
+                  ┌───────────────────┐
+                  │    AddingSelf     │
+                  └───────────────────┘
+                            │     ┌────────────────────────────┐
+                            │     │                            │
+                            ▼     ▼                            │
+                  ┌───────────────────┐              ┌───────────────────┐
+                  │ RefreshScheduled  │─────────────▶│    Refreshing     │
+                  └───────────────────┘              └───────────────────┘
 ```
 
 If something goes finally wrong when interacting with the coordination service, e.g. a permanent timeout after a configurable number of retries, ConstructR terminates its `ActorSystem` in the spirit of "fail fast".
@@ -42,8 +42,8 @@ If something goes finally wrong when interacting with the coordination service, 
 resolvers += Resolver.bintrayRepo("hseeberger", "maven")
 
 libraryDependencies ++= Vector(
-  "de.heikoseeberger" %% "constructr" % "0.16.1",
-  "de.heikoseeberger" %% "constructr-coordination-etcd" % "0.16.1", // in case of using etcd for coordination
+  "de.heikoseeberger" %% "constructr" % "0.19.0",
+  "de.heikoseeberger" %% "constructr-coordination-etcd" % "0.19.0", // in case of using etcd for coordination
   ...
 )
 ```
@@ -65,13 +65,16 @@ constructr {
     port = 2379
   }
 
-  coordination-timeout = 3 seconds  // Maximum response time for coordination service (e.g. etcd)
-  join-timeout         = 15 seconds // Might depend on cluster size and network properties
-  max-nr-of-seed-nodes = 0          // Any nonpositive value means Int.MaxValue
-  nr-of-retries        = 2          // Nr. of tries are nr. of retries + 1
-  refresh-interval     = 30 seconds // TTL is refresh-interval * ttl-factor
-  retry-delay          = 3 seconds  // Give coordination service (e.g. etcd) some delay before retrying
-  ttl-factor           = 2.0        // Must be greater or equal 1 + ((coordination-timeout * (1 + nr-of-retries) + retry-delay * nr-of-retries)/ refresh-interval)!
+  coordination-timeout    = 3 seconds  // Maximum response time for coordination service (e.g. etcd)
+  join-timeout            = 15 seconds // Might depend on cluster size and network properties
+  abort-on-join-timeout   = false      // Abort the attempt to join if true; otherwise restart the process from scratch
+  max-nr-of-seed-nodes    = 0          // Any nonpositive value means Int.MaxValue
+  nr-of-retries           = 2          // Nr. of tries are nr. of retries + 1
+  refresh-interval        = 30 seconds // TTL is refresh-interval * ttl-factor
+  retry-delay             = 3 seconds  // Give coordination service (e.g. etcd) some delay before retrying
+  ttl-factor              = 2.0        // Must be greater or equal 1 + ((coordination-timeout * (1 + nr-of-retries) + retry-delay * nr-of-retries)/ refresh-interval)!
+  ignore-refresh-failures = false      // Ignore failures once machine is already in "Refreshing" state. It prevents from FSM being terminated due to exhausted number of retries.
+
 }
 ```
 
@@ -96,7 +99,7 @@ docker run \
   --detach \
   --name etcd \
   --publish 2379:2379 \
-  quay.io/coreos/etcd:v2.3.7 \
+  quay.io/coreos/etcd:v2.3.8 \
   --listen-client-urls http://0.0.0.0:2379 \
   --advertise-client-urls http://192.168.99.100:2379
 ```
